@@ -31,6 +31,25 @@ function withIndefiniteArticle(word) {
   }
 }
 
+const FILTER_GROUPS = {
+  'browser': ['browser', 'browser_version'],
+  'os': ['os', 'os_version'],
+  'source': ['source', 'referrer'],
+  'utm': ['utm_medium', 'utm_source', 'utm_campaign']
+}
+
+function formatFilterGroup(filterGroup) {
+  if (filterGroup === 'utm') {
+    return 'UTM tags'
+  } else {
+    return formattedFilters[filterGroup]
+  }
+}
+
+function filtersForGroup(group) {
+  return FILTER_GROUPS[group] || [group]
+}
+
 const SECONDARY_FILTERS = {
   'browser': 'browser_version',
   'os': 'os_version',
@@ -40,26 +59,26 @@ const SECONDARY_FILTERS = {
 const SECONDARY_TO_PRIMARY = Object.keys(SECONDARY_FILTERS)
   .reduce((res, key) => Object.assign(res, {[SECONDARY_FILTERS[key]]: key}), {});
 
-function getVersionFilter(forFilter) {
-  return SECONDARY_FILTERS[forFilter]
+export function filterGroupForFilter(filter) {
+  const filterToGroupMap = Object.entries(FILTER_GROUPS).reduce((filterToGroupMap, [group, filtersInGroup]) => {
+    for (const filter of filtersInGroup) {
+      filterToGroupMap[filter] = group
+    }
+    return filterToGroupMap
+  }, {})
+
+
+  return filterToGroupMap[filter] || filter
 }
 
 class FilterModal extends React.Component {
   constructor(props) {
     super(props)
     const query = parseQuery(props.location.search, props.site)
-    let selectedFilter = this.props.match.params.field || 'page'
-    let secondaryFilter;
+    const selectedFilter = this.props.match.params.field || 'page'
+    const secondaryFilter = SECONDARY_FILTERS[selectedFilter]
 
-    if (Object.values(SECONDARY_FILTERS).includes(selectedFilter)) {
-      selectedFilter = SECONDARY_TO_PRIMARY[selectedFilter]
-    }
-    secondaryFilter = SECONDARY_FILTERS[selectedFilter]
-
-    this.state = Object.assign({selectedFilter, query}, getFilterValue(selectedFilter, query), {secondaryFilterValue: query.filters[secondaryFilter] || ''})
-
-    this.handleKeydown = this.handleKeydown.bind(this)
-    this.handleSubmit = this.handleSubmit.bind(this)
+    this.state = Object.assign({selectedFilter, query, formState: {}}, getFilterValue(selectedFilter, query), {secondaryFilterValue: query.filters[secondaryFilter] || ''})
   }
 
   componentDidMount() {
@@ -82,74 +101,52 @@ class FilterModal extends React.Component {
     return ['page', 'entry_page', 'exit_page'].includes(filter)
   }
 
-  fetchOptions(input) {
-    const {query, selectedFilter} = this.state
-    const updatedQuery = { ...query, filters: { ...query.filters, [selectedFilter]: null } }
-
-    if (selectedFilter === 'country') {
-      const matchedCountries = Datamap.prototype.worldTopo.objects.world.geometries.filter(c => c.properties.name.toLowerCase().includes(input.trim().toLowerCase()))
-      const matches = matchedCountries.map(c => c.id)
-
-      return api.get(`/api/stats/${encodeURIComponent(this.props.site.domain)}/suggestions/country`, updatedQuery, { q: matches })
-        .then((res) => {
-          return res.map(code => matchedCountries.filter(c => c.id == code)[0].properties.name)
-        })
-    } else {
-      return api.get(`/api/stats/${encodeURIComponent(this.props.site.domain)}/suggestions/${selectedFilter}`, updatedQuery, { q: input.trim() })
-    }
-  }
-
-  onInput(val) {
-    this.setState({filterValue: val})
-  }
-
-  renderSearchSelector() {
-    const {selectedFilter, filterValue} = this.state
-
-    return (
-      <SearchSelect
-        key={selectedFilter}
-        fetchOptions={this.fetchOptions.bind(this)}
-        initialSelectedItem={filterValue}
-        onInput={this.onInput.bind(this)}
-        placeholder={`Select ${withIndefiniteArticle(formattedFilters[selectedFilter])}`}
-      />
-    )
-  }
-
-  fetchSecondaryOptions(filterName) {
-    const {query, selectedFilter} = this.state
-
+  fetchOptions(filter) {
     return (input) => {
-      const {filterValue} = this.state
-      const updatedQuery = { ...query, filters: { ...query.filters, [selectedFilter]: filterValue, [filterName]: null } }
+      const {query, formState} = this.state
+      const updatedQuery = { ...query, filters: { ...query.filters, formState, [filter]: null } }
 
-      return api.get(`/api/stats/${encodeURIComponent(this.props.site.domain)}/suggestions/${filterName}`, updatedQuery, { q: input.trim() })
+      if (filter === 'country') {
+        const matchedCountries = Datamap.prototype.worldTopo.objects.world.geometries.filter(c => c.properties.name.toLowerCase().includes(input.trim().toLowerCase()))
+        const matches = matchedCountries.map(c => c.id)
+
+        return api.get(`/api/stats/${encodeURIComponent(this.props.site.domain)}/suggestions/country`, updatedQuery, { q: matches })
+          .then((res) => {
+            return res.map(code => matchedCountries.filter(c => c.id == code)[0].properties.name)
+          })
+      } else {
+        return api.get(`/api/stats/${encodeURIComponent(this.props.site.domain)}/suggestions/${filter}`, updatedQuery, { q: input.trim() })
+      }
     }
   }
 
-  onSecondaryInput(val) {
-    this.setState({secondaryFilterValue: val})
+  onInput(filter) {
+    return (val) => {
+      const formState = Object.assign(
+        this.state.formState,
+        {[filter]: {value: val, negated: false}}
+      )
+
+      this.setState({formState})
+    }
   }
 
-  renderVersionSelector() {
-    const {selectedFilter, filterValue, secondaryFilterValue} = this.state
-    const secondaryFilter = SECONDARY_FILTERS[selectedFilter]
-
-    if (secondaryFilter) {
+  renderFilterInputs() {
+    return filtersForGroup(this.state.selectedFilter).map((filter) => {
       return (
         <SearchSelect
-          key={selectedFilter + filterValue + secondaryFilter}
-          fetchOptions={this.fetchSecondaryOptions(secondaryFilter)}
-          initialSelectedItem={secondaryFilterValue}
-          onInput={this.onSecondaryInput.bind(this)}
-          placeholder={`${formattedFilters[secondaryFilter]} (optional)`}
+          key={filter}
+          fetchOptions={this.fetchOptions(filter)}
+          initialSelectedItem={this.state.formState[filter]}
+          onInput={this.onInput(filter)}
+          placeholder={`Select ${withIndefiniteArticle(formattedFilters[filter])}`}
         />
       )
-    }
+    })
   }
 
   selectFiltersAndCloseModal(filters) {
+    console.log(filters)
     const queryString = new URLSearchParams(window.location.search)
 
     for (const entry of filters) {
@@ -164,22 +161,20 @@ class FilterModal extends React.Component {
   }
 
   handleSubmit() {
-    const { selectedFilter, negated, filterValue, secondaryFilterValue } = this.state;
+    const { formState } = this.state;
 
-    let finalFilterValue = (this.negationSupported(selectedFilter) && negated ? '!' : '') + filterValue.trim()
-    if (selectedFilter == 'country') {
-      const allCountries = Datamap.prototype.worldTopo.objects.world.geometries;
-      const selectedCountry = allCountries.find((c) => c.properties.name === finalFilterValue) || { id: finalFilterValue };
-      finalFilterValue = selectedCountry.id
-    }
+    const filters = Object.entries(formState).reduce((res, [filterKey, {negated, value}]) => {
+      let finalFilterValue = (this.negationSupported(filterKey) && negated ? '!' : '') + value.trim()
 
-    const filters = [{filter: selectedFilter, value: finalFilterValue}]
+      if (filterKey == 'country') {
+        const allCountries = Datamap.prototype.worldTopo.objects.world.geometries;
+        const selectedCountry = allCountries.find((c) => c.properties.name === finalFilterValue) || { id: finalFilterValue };
+        finalFilterValue = selectedCountry.id
+      }
 
-    const secondaryFilter = SECONDARY_FILTERS[selectedFilter]
-
-    if (secondaryFilter) {
-      filters.push({filter: secondaryFilter, value: secondaryFilterValue.trim()})
-    }
+      res.push({filter: filterKey, value: finalFilterValue})
+      return res
+    }, [])
 
     this.selectFiltersAndCloseModal(filters)
   }
@@ -190,15 +185,15 @@ class FilterModal extends React.Component {
 
   renderBody() {
     const { selectedFilter, negated, filterValue, secondaryFilterValue, query } = this.state;
-    const editableFilters = Object.keys(this.state.query.filters).filter(filter => !['props'].concat(Object.values(SECONDARY_FILTERS)).includes(filter))
+    const editableFilters = Object.keys(this.state.query.filters).filter(filter => !['props', 'utm_source', 'utm_campaign'].concat(Object.values(SECONDARY_FILTERS)).includes(filter))
 
     return (
       <>
-        <h1 className="text-xl font-bold dark:text-gray-100">{query.filters[selectedFilter] || query.filters[SECONDARY_FILTERS[selectedFilter]] ? 'Edit' : 'Add'} Filter</h1>
+        <h1 className="text-xl font-bold dark:text-gray-100">Filter by {formatFilterGroup(selectedFilter)}</h1>
 
         <div className="my-4 border-b border-gray-300"></div>
         <main className="modal__content">
-          <form className="flex flex-col" id="filter-form" onSubmit={this.handleSubmit}>
+          <form className="flex flex-col" id="filter-form" onSubmit={this.handleSubmit.bind(this)}>
             <select
               value={selectedFilter}
               className="my-2 block w-full pr-10 border-gray-300 dark:border-gray-700 hover:border-gray-400 dark:hover:border-gray-200 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm rounded-md dark:bg-gray-900 dark:text-gray-300 cursor-pointer"
@@ -224,16 +219,14 @@ class FilterModal extends React.Component {
               </div>
             )}
 
-            {this.renderSearchSelector()}
-            {this.renderVersionSelector()}
+            {this.renderFilterInputs()}
 
             <div className="mt-6 flex items-center justify-start">
               <button
                 type="submit"
-                disabled={filterValue.trim().length === 0 && secondaryFilterValue.trim().length === 0}
                 className="button"
               >
-                {query.filters[selectedFilter] || query.filters[SECONDARY_FILTERS[selectedFilter]] ? 'Update' : 'Add'} Filter
+                Save Filter
               </button>
 
               {query.filters[selectedFilter] && (
